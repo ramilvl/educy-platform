@@ -1,0 +1,710 @@
+// This is your Prisma schema file
+generator client {
+  provider        = "prisma-client-js"
+  previewFeatures = ["multiSchema"]
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+  schemas  = ["educy"]
+}
+
+enum RoleName {
+  ADMIN
+  MODERATOR
+  INSTRUCTOR
+  STUDENT
+
+  @@schema("educy")
+}
+
+enum EnrollmentStatus {
+  PENDING
+  ENROLLED
+  REJECTED
+  WAITLISTED
+  WITHDRAWN
+
+  @@schema("educy")
+}
+
+enum DayOfWeek {
+  MONDAY
+  TUESDAY
+  WEDNESDAY
+  THURSDAY
+  FRIDAY
+  SATURDAY
+  SUNDAY
+
+  @@schema("educy")
+}
+
+enum NotificationType {
+  ASSIGNMENT_CREATED
+  ASSIGNMENT_DUE_SOON
+  GRADE_RECEIVED
+  LESSON_CANCELLED
+  ENROLLMENT_APPROVED
+  ENROLLMENT_REJECTED
+  GENERAL
+
+  @@schema("educy")
+}
+
+enum AuditLogSeverity {
+  INFO      // Regular operations (logins, views)
+  WARNING   // Potential issues (failed attempts, retries)
+  CRITICAL  // Important changes (role changes, deletions, permission updates)
+
+  @@schema("educy")
+}
+
+enum FileStatus {
+  PENDING   // Upload URL generated but not yet uploaded
+  UPLOADED  // File successfully uploaded to R2
+  FAILED    // Upload failed or cancelled
+
+  @@schema("educy")
+}
+
+enum UserStatus {
+  PENDING    // Account created but welcome email not sent or password not set
+  ACTIVE     // Account active, can login
+  SUSPENDED  // Account suspended by admin
+  DELETED    // Soft deleted
+
+  @@schema("educy")
+}
+
+model User {
+  id                String         @id @default(uuid())
+  email             String         @unique
+  hashedPassword    String?        // Optional - can be null for PENDING users
+  name              String
+  surname           String?        // Last name/surname
+  phone             String?        // Phone number
+  expertise         String[]       @default([]) // Keywords/subjects for instructors (for filtering)
+  role              RoleName       @default(STUDENT)
+  status            UserStatus     @default(ACTIVE) // Track account status
+  profileAvatarUrl  String?
+  createdAt         DateTime       @default(now())
+  lastLogin         DateTime?
+  resetToken        String?        @unique
+  resetTokenExpiry  DateTime?
+  welcomeEmailSent  Boolean        @default(false) // Track if welcome email sent
+  welcomeEmailSentAt DateTime?     // When welcome email was sent
+
+  // Relations
+  instructorSections Section[]       @relation("InstructorSections")
+  createdCourses     Course[]        @relation("CourseCreator")
+  enrollments        Enrollment[]
+  createdEnrollments Enrollment[]    @relation("EnrollmentCreator")
+  submissions        Submission[]
+  files              File[]
+  notifications      Notification[]
+  auditLogs          AuditLog[]
+  createdAssignments Assignment[]
+  certificates       Certificate[]
+  issuedCertificates Certificate[]   @relation("CertificateIssuer")
+  announcements      Announcement[]  @relation("AnnouncementAuthor")
+  tabSwitches        TabSwitch[]
+  createdExams       Exam[]          @relation("ExamCreator")
+  examAttempts       ExamAttempt[]
+  examGroupMembers   ExamGroupMember[]
+  examIndividualScores ExamIndividualScore[]
+  gradedExamScores   ExamIndividualScore[] @relation("ExamGrader")
+  createdCaseRooms   CaseRoom[]      @relation("CaseRoomCreator")
+  casePosts          CasePost[]
+  approvedCasePosts  CasePost[]      @relation("CasePostApprover")
+  payments           Payment[]
+  recordedPayments   Payment[]       @relation("PaymentRecorder")
+  reportsFiled       UserReport[]    @relation("ReportFiler")
+  reportsReceived    UserReport[]    @relation("ReportedUser")
+  commentBansApplied CommentBan[]    @relation("BanApplier")
+  commentBansReceived CommentBan[]   @relation("BannedUser")
+
+  @@map("users")
+  @@schema("educy")
+}
+
+model Course {
+  id          String    @id @default(uuid())
+  code        String    @unique
+  title       String
+  description String?
+  term        String
+  visibility  Boolean   @default(true)
+  createdById String
+  createdBy   User      @relation("CourseCreator", fields: [createdById], references: [id])
+  createdAt   DateTime  @default(now())
+
+  // Relations
+  sections    Section[]
+
+  @@map("courses")
+  @@schema("educy")
+}
+
+model Section {
+  id           String       @id @default(uuid())
+  courseId     String
+  course       Course       @relation(fields: [courseId], references: [id], onDelete: Cascade)
+  instructorId String
+  instructor   User         @relation("InstructorSections", fields: [instructorId], references: [id])
+  capacity     Int          @default(30)
+  term         String
+  createdAt    DateTime     @default(now())
+
+  // Relations
+  lessons       Lesson[]
+  enrollments   Enrollment[]
+  assignments   Assignment[]
+  certificates  Certificate[]
+  announcements Announcement[]
+  exams         Exam[]
+  caseRooms     CaseRoom[]
+
+  @@index([term])
+  @@index([instructorId])
+  @@index([courseId, term])
+  @@map("sections")
+  @@schema("educy")
+}
+
+model Room {
+  id        String   @id @default(uuid())
+  name      String   @unique
+  location  String?
+  capacity  Int
+  resources Json?    // Store projector, lab equipment, etc.
+  createdAt DateTime @default(now())
+
+  // Relations
+  lessons   Lesson[]
+
+  @@map("rooms")
+  @@schema("educy")
+}
+
+model Lesson {
+  id          String     @id @default(uuid())
+  sectionId   String
+  section     Section    @relation(fields: [sectionId], references: [id], onDelete: Cascade)
+  title       String
+  description String?
+  dayOfWeek   DayOfWeek
+  startTime   String     // Format: "HH:MM"
+  endTime     String     // Format: "HH:MM"
+  roomId      String?
+  room        Room?      @relation(fields: [roomId], references: [id])
+  materialIds String[]   // Array of file IDs
+  isArchived  Boolean    @default(false) // Content aging: archived materials
+  createdAt   DateTime   @default(now())
+  updatedAt   DateTime   @default(now()) @updatedAt // Content aging: track last update
+
+  // Relations
+  schedules   Schedule[]
+
+  @@index([isArchived])
+  @@index([updatedAt])
+  @@map("lessons")
+  @@schema("educy")
+}
+
+model Schedule {
+  id          String   @id @default(uuid())
+  lessonId    String
+  lesson      Lesson   @relation(fields: [lessonId], references: [id], onDelete: Cascade)
+  date        DateTime // Specific date for this lesson occurrence
+  isCancelled Boolean  @default(false)
+  notes       String?
+  createdAt   DateTime @default(now())
+
+  @@map("schedules")
+  @@schema("educy")
+}
+
+model Enrollment {
+  id          String           @id @default(uuid())
+  userId      String
+  user        User             @relation(fields: [userId], references: [id], onDelete: Cascade)
+  sectionId   String
+  section     Section          @relation(fields: [sectionId], references: [id], onDelete: Cascade)
+  status      EnrollmentStatus @default(PENDING)
+  enrolledAt  DateTime         @default(now())
+  enrolledById String?          // Who enrolled this student (moderator, admin, or self)
+  enrolledBy   User?            @relation("EnrollmentCreator", fields: [enrolledById], references: [id], onDelete: SetNull)
+  certificate Certificate?
+
+  @@unique([userId, sectionId])
+  @@index([status])
+  @@index([sectionId, status])
+  @@index([enrolledById])
+  @@map("enrollments")
+  @@schema("educy")
+}
+
+model Assignment {
+  id               String       @id @default(uuid())
+  sectionId        String
+  section          Section      @relation(fields: [sectionId], references: [id], onDelete: Cascade)
+  title            String
+  description      String?
+  dueDate          DateTime
+  allowedFileTypes String[]     // ["pdf", "docx", "txt"]
+  maxSizeBytes     Int          @default(10485760) // 10MB default
+  createdById      String
+  createdBy        User         @relation(fields: [createdById], references: [id])
+  isArchived       Boolean      @default(false) // Content aging: archived assignments
+  createdAt        DateTime     @default(now())
+  updatedAt        DateTime     @default(now()) @updatedAt // Content aging: track last update
+
+  // Relations
+  submissions      Submission[]
+  tabSwitches      TabSwitch[]
+
+  @@index([sectionId])
+  @@index([dueDate])
+  @@index([isArchived])
+  @@index([updatedAt])
+  @@map("assignments")
+  @@schema("educy")
+}
+
+model Announcement {
+  id          String   @id @default(uuid())
+  sectionId   String
+  section     Section  @relation(fields: [sectionId], references: [id], onDelete: Cascade)
+  title       String
+  content     String   // Announcement content/message
+  authorId    String
+  author      User     @relation("AnnouncementAuthor", fields: [authorId], references: [id])
+  isArchived  Boolean  @default(false) // Content aging: archived announcements
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @default(now()) @updatedAt // Content aging: track last update
+
+  @@index([sectionId])
+  @@index([isArchived])
+  @@index([updatedAt])
+  @@map("announcements")
+  @@schema("educy")
+}
+
+model Submission {
+  id           String    @id @default(uuid())
+  assignmentId String
+  assignment   Assignment @relation(fields: [assignmentId], references: [id], onDelete: Cascade)
+  studentId    String
+  student      User      @relation(fields: [studentId], references: [id], onDelete: Cascade)
+  fileKey      String?   // R2 storage key
+  text         String?
+  submittedAt  DateTime  @default(now())
+  isLate       Boolean   @default(false)
+  grade        Float?
+  feedback     String?
+  gradedAt     DateTime?
+
+  // Relations
+  tabSwitches  TabSwitch[]
+
+  @@unique([assignmentId, studentId])
+  @@map("submissions")
+  @@schema("educy")
+}
+
+model File {
+  id         String     @id @default(uuid())
+  ownerId    String
+  owner      User       @relation(fields: [ownerId], references: [id], onDelete: Cascade)
+  key        String     @unique // R2 storage key
+  filename   String
+  mimeType   String
+  sizeBytes  Int
+  status     FileStatus @default(PENDING)
+  uploadedAt DateTime   @default(now())
+  updatedAt  DateTime   @updatedAt
+
+  @@index([ownerId])
+  @@index([status])
+  @@map("files")
+  @@schema("educy")
+}
+
+model Notification {
+  id        String           @id @default(uuid())
+  userId    String
+  user      User             @relation(fields: [userId], references: [id], onDelete: Cascade)
+  type      NotificationType
+  payload   Json             // Flexible payload for different notification types
+  readAt    DateTime?
+  createdAt DateTime         @default(now())
+
+  @@index([userId, readAt])
+  @@map("notifications")
+  @@schema("educy")
+}
+
+model Certificate {
+  id                String   @id @default(uuid())
+  certificateNumber String   @unique @default(uuid()) // Unique verification code
+  userId            String
+  user              User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  sectionId         String
+  section           Section  @relation(fields: [sectionId], references: [id], onDelete: Cascade)
+  enrollmentId      String   @unique
+  enrollment        Enrollment @relation(fields: [enrollmentId], references: [id], onDelete: Cascade)
+  completionDate    DateTime @default(now())
+  issuedAt          DateTime @default(now())
+  issuedById        String?  // Admin/Instructor who issued it
+  issuedBy          User?    @relation("CertificateIssuer", fields: [issuedById], references: [id], onDelete: SetNull)
+
+  @@index([userId])
+  @@index([certificateNumber])
+  @@index([sectionId])
+  @@map("certificates")
+  @@schema("educy")
+}
+
+model AuditLog {
+  id         String            @id @default(uuid())
+  userId     String?
+  user       User?             @relation(fields: [userId], references: [id], onDelete: SetNull)
+  action     String            // "USER_ROLE_CHANGED", "ASSIGNMENT_GRADED", etc.
+  targetType String?           // "User", "Assignment", "Course", etc.
+  targetId   String?
+  details    Json?             // Additional context
+  severity   AuditLogSeverity  @default(INFO) // INFO, WARNING, CRITICAL
+  category   String?           // "SECURITY", "SYSTEM", "ADMIN_ACTION", "USER_ACTION"
+  createdAt  DateTime          @default(now())
+
+  @@index([action])
+  @@index([severity])
+  @@index([userId])
+  @@index([createdAt])
+  @@map("audit_logs")
+  @@schema("educy")
+}
+
+model TabSwitch {
+  id           String      @id @default(uuid())
+  assignmentId String
+  assignment   Assignment  @relation(fields: [assignmentId], references: [id], onDelete: Cascade)
+  studentId    String
+  student      User        @relation(fields: [studentId], references: [id], onDelete: Cascade)
+  submissionId String?     // Optional - links to submission if one exists
+  submission   Submission? @relation(fields: [submissionId], references: [id], onDelete: Cascade)
+  timestamp    DateTime    @default(now())
+  eventType    String      // "visibility_hidden", "visibility_visible", "blur", "focus"
+
+  @@index([assignmentId])
+  @@index([studentId])
+  @@index([submissionId])
+  @@index([timestamp])
+  @@map("tab_switches")
+  @@schema("educy")
+}
+
+model Exam {
+  id           String      @id @default(uuid())
+  sectionId    String
+  section      Section     @relation(fields: [sectionId], references: [id], onDelete: Cascade)
+  title        String
+  description  String?
+  durationMinutes Int      // Time limit in minutes
+  startTime    DateTime   // When exam becomes available
+  endTime      DateTime   // When exam closes
+  isGroupExam  Boolean    @default(false) // Whether this is a group exam
+  createdById  String
+  createdBy    User       @relation("ExamCreator", fields: [createdById], references: [id])
+  createdAt    DateTime   @default(now())
+  updatedAt    DateTime   @updatedAt
+
+  // Relations
+  examAttempts ExamAttempt[]
+  questions    ExamQuestion[]
+
+  @@index([sectionId])
+  @@index([startTime])
+  @@index([endTime])
+  @@map("exams")
+  @@schema("educy")
+}
+
+model ExamQuestion {
+  id           String     @id @default(uuid())
+  examId       String
+  exam         Exam       @relation(fields: [examId], references: [id], onDelete: Cascade)
+  questionText String
+  questionType String     // "multiple_choice", "true_false", "short_answer", "essay"
+  options      Json?      // For multiple choice: ["A", "B", "C", "D"]
+  correctAnswer String?   // Correct answer or answer key
+  points       Float      @default(1)
+  orderIndex   Int        // Question order in the exam
+  createdAt    DateTime   @default(now())
+
+  // Relations
+  answers      ExamAnswer[]
+
+  @@index([examId])
+  @@map("exam_questions")
+  @@schema("educy")
+}
+
+model ExamAttempt {
+  id            String     @id @default(uuid())
+  examId        String
+  exam          Exam       @relation(fields: [examId], references: [id], onDelete: Cascade)
+  studentId     String?    // Null if group exam
+  student       User?      @relation(fields: [studentId], references: [id], onDelete: Cascade)
+  groupId       String?    // For group exams
+  group         ExamGroup? @relation(fields: [groupId], references: [id], onDelete: Cascade)
+  startedAt     DateTime   @default(now())
+  submittedAt   DateTime?
+  timeRemaining Int?       // Seconds remaining (for pause/resume)
+  score         Float?
+  isCompleted   Boolean    @default(false)
+  createdAt     DateTime   @default(now())
+
+  // Relations
+  answers       ExamAnswer[]
+  individualScores ExamIndividualScore[]
+
+  @@index([examId])
+  @@index([studentId])
+  @@index([groupId])
+  @@unique([examId, studentId]) // One attempt per student per exam
+  @@map("exam_attempts")
+  @@schema("educy")
+}
+
+model ExamGroup {
+  id           String      @id @default(uuid())
+  examId       String
+  name         String      // Group name
+  createdAt    DateTime    @default(now())
+
+  // Relations
+  members      ExamGroupMember[]
+  attempts     ExamAttempt[]
+
+  @@index([examId])
+  @@map("exam_groups")
+  @@schema("educy")
+}
+
+model ExamGroupMember {
+  id        String    @id @default(uuid())
+  groupId   String
+  group     ExamGroup @relation(fields: [groupId], references: [id], onDelete: Cascade)
+  studentId String
+  student   User      @relation(fields: [studentId], references: [id], onDelete: Cascade)
+  createdAt DateTime  @default(now())
+
+  @@unique([groupId, studentId])
+  @@index([groupId])
+  @@index([studentId])
+  @@map("exam_group_members")
+  @@schema("educy")
+}
+
+model ExamAnswer {
+  id         String       @id @default(uuid())
+  attemptId  String
+  attempt    ExamAttempt  @relation(fields: [attemptId], references: [id], onDelete: Cascade)
+  questionId String
+  question   ExamQuestion @relation(fields: [questionId], references: [id], onDelete: Cascade)
+  answer     String?      // Student's answer
+  isCorrect  Boolean?     // Auto-graded or manually graded
+  points     Float?       // Points awarded
+  createdAt  DateTime     @default(now())
+
+  @@unique([attemptId, questionId])
+  @@index([attemptId])
+  @@index([questionId])
+  @@map("exam_answers")
+  @@schema("educy")
+}
+
+model ExamIndividualScore {
+  id         String      @id @default(uuid())
+  attemptId  String
+  attempt    ExamAttempt @relation(fields: [attemptId], references: [id], onDelete: Cascade)
+  studentId  String
+  student    User        @relation(fields: [studentId], references: [id], onDelete: Cascade)
+  score      Float       // Individual score within the group
+  feedback   String?
+  gradedAt   DateTime    @default(now())
+  gradedById String
+  gradedBy   User        @relation("ExamGrader", fields: [gradedById], references: [id])
+
+  @@unique([attemptId, studentId])
+  @@index([attemptId])
+  @@index([studentId])
+  @@map("exam_individual_scores")
+  @@schema("educy")
+}
+
+model CaseRoom {
+  id          String     @id @default(uuid())
+  sectionId   String
+  section     Section    @relation(fields: [sectionId], references: [id], onDelete: Cascade)
+  title       String
+  description String?
+  dueDate     DateTime?
+  createdById String
+  createdBy   User       @relation("CaseRoomCreator", fields: [createdById], references: [id])
+  isActive    Boolean    @default(true)
+  createdAt   DateTime   @default(now())
+  updatedAt   DateTime   @updatedAt
+
+  // Relations
+  posts       CasePost[]
+
+  @@index([sectionId])
+  @@index([createdById])
+  @@map("case_rooms")
+  @@schema("educy")
+}
+
+model CasePost {
+  id          String     @id @default(uuid())
+  roomId      String
+  room        CaseRoom   @relation(fields: [roomId], references: [id], onDelete: Cascade)
+  studentId   String
+  student     User       @relation(fields: [studentId], references: [id], onDelete: Cascade)
+  content     String
+  fileKeys    String[]   // Array of uploaded file keys
+  isApproved  Boolean?   // null = pending, true = approved, false = rejected
+  approvedById String?
+  approvedBy  User?      @relation("CasePostApprover", fields: [approvedById], references: [id], onDelete: SetNull)
+  approvedAt  DateTime?
+  feedback    String?    // Instructor feedback
+  createdAt   DateTime   @default(now())
+  updatedAt   DateTime   @updatedAt
+
+  @@index([roomId])
+  @@index([studentId])
+  @@index([isApproved])
+  @@map("case_posts")
+  @@schema("educy")
+}
+
+model Payment {
+  id             String    @id @default(uuid())
+  studentId      String
+  student        User      @relation(fields: [studentId], references: [id], onDelete: Cascade)
+  amount         Float
+  currency       String    @default("USD")
+  paymentMonth   DateTime  // Which month this payment is for
+  status         String    // "pending", "paid", "paused", "cancelled"
+  statusReason   String?   // Reason for status (e.g., "On leave", "Financial difficulty")
+  paidAt         DateTime?
+  paymentMethod  String?   // "cash", "card", "bank_transfer", etc.
+  receiptUrl     String?
+  notes          String?
+  recordedById   String
+  recordedBy     User      @relation("PaymentRecorder", fields: [recordedById], references: [id])
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+
+  @@index([studentId])
+  @@index([paymentMonth])
+  @@index([status])
+  @@map("payments")
+  @@schema("educy")
+}
+
+enum UserReportStatus {
+  PENDING     // Awaiting review
+  REVIEWED    // Reviewed by admin
+  DISMISSED   // Report dismissed
+  ACTIONED    // Action taken (ban applied, etc.)
+
+  @@schema("educy")
+}
+
+// User Report model - for moderators to report policy violations
+model UserReport {
+  id            String           @id @default(uuid())
+  reportedById  String
+  reportedBy    User             @relation("ReportFiler", fields: [reportedById], references: [id])
+  reportedUserId String
+  reportedUser  User             @relation("ReportedUser", fields: [reportedUserId], references: [id], onDelete: Cascade)
+  reason        String           // Reason for report
+  evidence      String?          // Optional evidence (URLs, screenshots,  etc.)
+  status        UserReportStatus @default(PENDING)
+  reviewedById  String?          // Admin who reviewed
+  reviewedAt    DateTime?
+  reviewNotes   String?          // Admin's notes on the report
+  createdAt     DateTime         @default(now())
+
+  @@index([reportedById])
+  @@index([reportedUserId])
+  @@index([status])
+  @@index([createdAt])
+  @@map("user_reports")
+  @@schema("educy")
+}
+
+// Comment Ban model - temporary bans on commenting
+model CommentBan {
+  id          String    @id @default(uuid())
+  userId      String
+  user        User      @relation("BannedUser", fields: [userId], references: [id], onDelete: Cascade)
+  bannedById  String
+  bannedBy    User      @relation("BanApplier", fields: [bannedById], references: [id])
+  reason      String
+  durationHours Int     // Duration in hours (e.g., 24, 48, 72)
+  expiresAt   DateTime  // Calculated expiry time
+  isActive    Boolean   @default(true) // Auto-set to false after expiry
+  createdAt   DateTime  @default(now())
+
+  @@index([userId])
+  @@index([bannedById])
+  @@index([expiresAt])
+  @@index([isActive])
+  @@map("comment_bans")
+  @@schema("educy")
+}
+
+// System Settings - Platform-wide configuration (Admin-only)
+model SystemSettings {
+  id                  String   @id @default(uuid())
+  
+  // Platform Identity
+  platformName        String   @default("Educy")
+  platformLogoUrl     String?
+  
+  // Email Configuration
+  systemEmailFrom     String?  // Sender email address
+  systemEmailName     String?  // Sender display name
+  
+  // Security Settings
+  passwordMinLength   Int      @default(8)
+  passwordRequireUpper Boolean @default(true)
+  passwordRequireLower Boolean @default(true)
+  passwordRequireNumber Boolean @default(true)
+  passwordRequireSpecial Boolean @default(false)
+  
+  // Storage Limits
+  maxUploadSizeMB     Int      @default(10)  // Global upload limit in MB
+  
+  // Feature Flags
+  enableCaseRooms     Boolean  @default(true)
+  enableExams         Boolean  @default(true)
+  enableCertificates  Boolean  @default(true)
+  enablePayments      Boolean  @default(true)
+
+  // Enrollment Limits
+  maxEnrollmentsPerStudent Int?  // Max active enrollments per student (null = unlimited)
+
+  // Metadata
+  lastModifiedBy      String?  // User ID of last admin who modified
+  createdAt           DateTime @default(now())
+  updatedAt           DateTime @updatedAt
+  
+  @@map("system_settings")
+  @@schema("educy")
+}
